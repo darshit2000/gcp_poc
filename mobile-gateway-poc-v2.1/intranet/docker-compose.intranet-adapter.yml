@@ -1,0 +1,48 @@
+# Architecture V2.1 — NATS ADAPTER site (intranet region-c egress).
+# A SEPARATE intranet site (its own compose project / Docker network) that is the ONLY
+# path outbound to the internet for the leaf, per org policy. region-a's nats-core dials
+# this adapter (host:27422 / :27423); the adapter relays the raw NATS leafnode TCP out to
+# the two GKE nats-gcp leaf LoadBalancers.
+#
+# SELF-CONTAINED: the nginx stream config is generated at container start from env vars
+# (GKE_LEAF_LB_A / GKE_LEAF_LB_B) — NO separate .conf file to render/mount. The command
+# writes /tmp/nginx.conf and execs nginx. L4/TCP passthrough; proxy_timeout 3600s (>>
+# the NATS leaf ping ~2 min) so the link does not flap. One listen port per hub.
+#
+# 3-NETWORK ISOLATION: own compose project (`-p intra-c`) → its own network, isolated from
+# region-a/region-b; reaches the GKE leaf LBs over the internet; reached by region-a's
+# core over the host (published 27422/27423).
+#
+# Run (fill the two GKE leaf LB IPs from `kubectl -n region-a get svc nats-gcp-leaf` +
+# `-n region-b ...`):
+#   GKE_LEAF_LB_A=<region-a leaf LB IP> GKE_LEAF_LB_B=<region-b leaf LB IP> \
+#     docker-compose -f docker-compose.intranet-adapter.yml -p intra-c up -d
+services:
+  adapter:
+    image: nginx:1.30-alpine
+    environment:
+      GKE_LEAF_LB_A: "${GKE_LEAF_LB_A:?set GKE_LEAF_LB_A to the region-a nats-gcp-leaf LB IP}"
+      GKE_LEAF_LB_B: "${GKE_LEAF_LB_B:?set GKE_LEAF_LB_B to the region-b nats-gcp-leaf LB IP}"
+    # Generate the stream config from env, then run nginx in the foreground.
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/nginx.conf <<EOF
+        worker_processes auto;
+        pid /tmp/nginx.pid;
+        error_log /dev/stderr warn;
+        events { worker_connections 1024; }
+        stream {
+          upstream gke_leaf_a { server ${GKE_LEAF_LB_A}:7422; }
+          upstream gke_leaf_b { server ${GKE_LEAF_LB_B}:7422; }
+          proxy_connect_timeout 10s;
+          proxy_timeout 3600s;
+          server { listen 7422; proxy_pass gke_leaf_a; }
+          server { listen 7423; proxy_pass gke_leaf_b; }
+        }
+        EOF
+        exec nginx -c /tmp/nginx.conf -g 'daemon off;'
+    ports:
+      - "27422:7422"     # region-a core dials this (-> GKE region-a leaf LB)
+      - "27423:7423"     # region-a core dials this (-> GKE region-b leaf LB)

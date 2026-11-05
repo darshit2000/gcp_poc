@@ -1,0 +1,17 @@
+# === ARCHITECTURE V2 — GKE SINGLE-CLUSTER variant (region-a + region-b namespaces) ===
+# One GKE cluster hosting BOTH regions' GCP-side components in separate namespaces.
+# Cheaper/faster first pass. Proves topology + two public LB IPs + the leaf-LB dial-in.
+# Does NOT prove geo-separation or independent failure domains (that needs 2 clusters —
+# see k8s/gke/region-a|b.yaml). In-cluster region isolation is enforced by the
+# NetworkPolicies in 40-networkpolicy.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: region-a
+  labels: { region: region-a }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: region-b
+  labels: { region: region-b }

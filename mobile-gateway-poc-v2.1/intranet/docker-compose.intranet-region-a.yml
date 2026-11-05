@@ -1,0 +1,49 @@
+# Architecture V2.1 — INTRANET side for REGION-A (runs on the region-a intranet site/VM).
+# This is the SINGLE leaf egress. nats-core-a does NOT dial the GKE hubs directly; it
+# dials the NATS ADAPTER (region-c, a separate site/network — see
+# docker-compose.intranet-adapter.yml), which relays to BOTH GKE nats-gcp leaf LBs.
+# nats-core-a holds TWO leaf remotes (both hub:true) + the gateway (supercluster peer).
+#
+# 3-NETWORK ISOLATION MODEL: region-a, region-b, and the adapter (region-c) each run as
+# their OWN compose project / network; they bridge ONLY over the host (host-gw +
+# published ports). region-b has NO leaf (pure peer); only region-a reaches the adapter.
+#
+# ONE-VM CO-LOCATION host ports: region-a gateway 7222 / monitor 8222 (region-b 7223/8223).
+# The adapter publishes 27422 (-> GKE region-a leaf) and 27423 (-> GKE region-b leaf).
+#
+# Run (fill the two env values; the leaf URLs point at the ADAPTER, not the GKE LBs):
+#   GCP_HUB_URL="nats-leaf://host-gw:27422" GCP_HUB_URL_B="nats-leaf://host-gw:27423" \
+#   PEER_GW_URL="nats://host-gw:7223" \
+#     docker-compose -f docker-compose.intranet-region-a.yml -p intra-a up -d
+services:
+  nats-core-a:
+    image: nats:2.10-alpine
+    command: ["-c", "/etc/nats/nats-core-a.conf"]
+    environment:
+      # SINGLE leaf egress: dial the ADAPTER (region-c) for BOTH GKE hubs, via host.
+      # The adapter forwards :27422 -> GKE region-a leaf LB, :27423 -> GKE region-b leaf LB.
+      GCP_HUB_URL:   "${GCP_HUB_URL:-nats-leaf://host-gw:27422}"
+      GCP_HUB_URL_B: "${GCP_HUB_URL_B:-nats-leaf://host-gw:27423}"
+      # SUPERCLUSTER peer = region-b's gateway, reached over the host at port 7223:
+      PEER_GW_URL:   "${PEER_GW_URL:-nats://host-gw:7223}"
+    volumes:
+      - ../../nats/nats-core-a.conf:/etc/nats/nats-core-a.conf:ro
+    extra_hosts:
+      - "host-gw:host-gateway"
+    ports:
+      - "7222:7222"     # gateway listener (region-b dials this via host:7222)
+      - "8222:8222"     # monitoring (/leafz, /gatewayz)
+
+  rest-nats-a:
+    image: super-rest-nats
+    environment:
+      NATS_URL: "nats://nats-core-a:4222"
+      REGION: "region-a"
+    depends_on: [nats-core-a]
+
+  worker-region-a:
+    image: super-worker
+    environment:
+      NATS_URL: "nats://nats-core-a:4222"
+      REGION: "region-a"
+    depends_on: [nats-core-a]

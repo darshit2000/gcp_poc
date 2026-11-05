@@ -1,0 +1,41 @@
+# Architecture V2.1 — INTRANET side for REGION-B (runs on the region-b intranet site/VM).
+# V2.1 single-leaf-egress: region-b's core has NO leaf uplink (nats-core-a is the sole
+# egress, via the adapter). This is a PURE supercluster peer — gateway only. region-b
+# traffic reaches the cloud via: client -> GKE nginx-b -> nats-gcp-b -> leaf (dialed by
+# region-a's core through the adapter) -> nats-core-a -> gateway -> nats-core-b.
+#
+# 3-NETWORK ISOLATION: own compose project / network; bridges to region-a ONLY over the
+# host gateway. ONE-VM CO-LOCATION host ports: region-b gateway 7223 / monitor 8223.
+#
+# Run:
+#   PEER_GW_URL="nats://host-gw:7222" \
+#     docker-compose -f docker-compose.intranet-region-b.yml -p intra-b up -d
+services:
+  nats-core-b:
+    image: nats:2.10-alpine
+    command: ["-c", "/etc/nats/nats-core-b.conf"]
+    environment:
+      # SUPERCLUSTER peer = region-a's gateway, reached over the host at port 7222.
+      # NO GCP_HUB_URL — region-b does not dial the leaf (single-leaf-egress).
+      PEER_GW_URL: "${PEER_GW_URL:-nats://host-gw:7222}"
+    volumes:
+      - ../../nats/nats-core-b.conf:/etc/nats/nats-core-b.conf:ro
+    extra_hosts:
+      - "host-gw:host-gateway"
+    ports:
+      - "7223:7222"     # gateway listener (region-a dials this via host:7223)
+      - "8223:8222"     # monitoring (/leafz, /gatewayz)
+
+  rest-nats-b:
+    image: super-rest-nats
+    environment:
+      NATS_URL: "nats://nats-core-b:4222"
+      REGION: "region-b"
+    depends_on: [nats-core-b]
+
+  worker-region-b:
+    image: super-worker
+    environment:
+      NATS_URL: "nats://nats-core-b:4222"
+      REGION: "region-b"
+    depends_on: [nats-core-b]
